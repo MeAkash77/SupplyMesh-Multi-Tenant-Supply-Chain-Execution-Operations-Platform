@@ -1,0 +1,13 @@
+{ "title": "SupplyMesh Operations", "uid": "sm-ops", "schemaVersion": 39, "refresh": "10s",
+  "panels": [
+    { "id": 1, "type": "timeseries", "title": "API p95 latency (ms)", "gridPos": {"x":0,"y":0,"w":12,"h":8}, "datasource": "InfluxDB",
+      "targets": [{ "query": "from(bucket:\"metrics\") |> range(start: v.timeRangeStart) |> filter(fn:(r)=> r._measurement==\"supplymesh_http_duration\" and r._field==\"upper_95\")" }] },
+    { "id": 2, "type": "timeseries", "title": "Kafka consumer lag (ms)", "gridPos": {"x":12,"y":0,"w":12,"h":8}, "datasource": "InfluxDB",
+      "targets": [{ "query": "from(bucket:\"metrics\") |> range(start: v.timeRangeStart) |> filter(fn:(r)=> r._measurement==\"supplymesh_consumer_lag_ms\" and r._field==\"mean\")" }] },
+    { "id": 3, "type": "stat", "title": "DLQ messages (1h)", "gridPos": {"x":0,"y":8,"w":6,"h":4}, "datasource": "InfluxDB",
+      "targets": [{ "query": "from(bucket:\"metrics\") |> range(start: -1h) |> filter(fn:(r)=> r._measurement==\"supplymesh_consumer_dlq\") |> sum()" }] },
+    { "id": 4, "type": "timeseries", "title": "POs created per tenant", "gridPos": {"x":6,"y":8,"w":18,"h":4}, "datasource": "InfluxDB",
+      "targets": [{ "query": "from(bucket:\"metrics\") |> range(start: v.timeRangeStart) |> filter(fn:(r)=> r._measurement==\"supplymesh_po_created\") |> group(columns:[\"tenant\"])" }] },
+    { "id": 5, "type": "timeseries", "title": "SQL Server CPU / waits", "gridPos": {"x":0,"y":12,"w":24,"h":8}, "datasource": "InfluxDB",
+      "targets": [{ "query": "from(bucket:\"metrics\") |> range(start: v.timeRangeStart) |> filter(fn:(r)=> r._measurement==\"sqlserver_performance\")" }] }
+  ] }

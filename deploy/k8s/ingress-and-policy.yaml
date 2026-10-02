@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: supplymesh, namespace: supplymesh, annotations: { nginx.ingress.kubernetes.io/limit-rps: "50" } }
+spec:
+  ingressClassName: nginx
+  tls: [{ hosts: [api.supplymesh.example.com], secretName: supplymesh-tls }]
+  rules:
+    - host: api.supplymesh.example.com
+      http:
+        paths:
+          - { path: /api/v1/catalog, pathType: Prefix, backend: { service: { name: catalog-api, port: { number: 80 } } } }
+          - { path: /api/v1, pathType: Prefix, backend: { service: { name: orders-api, port: { number: 80 } } } }
+---
+# Default-deny, then allow only ingress-nginx -> APIs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: supplymesh }
+spec: { podSelector: {}, policyTypes: [Ingress] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-from-ingress, namespace: supplymesh }
+spec:
+  podSelector: { matchExpressions: [{ key: app, operator: In, values: [orders-api, catalog-api] }] }
+  ingress: [{ from: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } } }] }]

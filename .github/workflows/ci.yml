@@ -1,0 +1,47 @@
+name: ci
+on: { push: { branches: [main] }, pull_request: {} }
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 8.0.x }
+      - run: dotnet restore
+      - run: dotnet build -c Release --no-restore -warnaserror
+      - run: dotnet test -c Release --no-build --logger "trx" --collect:"XPlat Code Coverage"
+      - run: dotnet list package --vulnerable --include-transitive
+  frontend:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install && npm test && npm run build
+  sql:
+    runs-on: ubuntu-latest
+    services:
+      mssql: { image: "mcr.microsoft.com/mssql/server:2022-latest", env: { ACCEPT_EULA: "Y", MSSQL_SA_PASSWORD: "Your_strong_pw1" }, ports: ["1433:1433"] }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations (proves schema + stored procs compile)
+        run: |
+          sleep 20
+          for f in db/migrations/*.sql; do docker run --rm --network host -v $PWD/db:/db mcr.microsoft.com/mssql-tools /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P Your_strong_pw1 -b -i /db/migrations/$(basename $f); done
+  deploy:
+    needs: [backend, frontend, sql]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: { id-token: write, contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with: { client-id: "${{ secrets.AZURE_CLIENT_ID }}", tenant-id: "${{ secrets.AZURE_TENANT_ID }}", subscription-id: "${{ secrets.AZURE_SUBSCRIPTION_ID }}" }   # OIDC, no stored secrets
+      - run: |
+          az acr login -n ${{ vars.ACR }}
+          for p in Catalog.Api Orders.Api Inventory.Worker; do
+            docker build -f Dockerfile.dotnet --build-arg PROJECT=SupplyMesh.$p -t ${{ vars.ACR }}.azurecr.io/supplymesh/$(echo $p | tr '[:upper:].' '[:lower:]-'):${{ github.sha }} . 
+            docker push ${{ vars.ACR }}.azurecr.io/supplymesh/$(echo $p | tr '[:upper:].' '[:lower:]-'):${{ github.sha }}
+          done
+      - run: az aks get-credentials -g supplymesh-rg -n supplymesh-aks && kubectl apply -f deploy/k8s/

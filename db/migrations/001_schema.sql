@@ -1,0 +1,66 @@
+-- SupplyMesh MSSQL schema: multi-tenant (shared DB, TenantId discriminator + Row-Level Security)
+IF DB_ID('SupplyMesh') IS NULL CREATE DATABASE SupplyMesh;
+GO
+USE SupplyMesh;
+GO
+CREATE SCHEMA sm; GO
+CREATE SCHEMA sec; GO
+
+CREATE TABLE sm.Tenant (TenantId UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(), Name NVARCHAR(200) NOT NULL, CreatedUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
+
+CREATE TABLE sm.Supplier (
+  SupplierId BIGINT IDENTITY PRIMARY KEY, TenantId UNIQUEIDENTIFIER NOT NULL REFERENCES sm.Tenant,
+  Code NVARCHAR(50) NOT NULL, Name NVARCHAR(200) NOT NULL, Country CHAR(2) NULL, IsActive BIT NOT NULL DEFAULT 1,
+  CONSTRAINT UQ_Supplier UNIQUE (TenantId, Code));
+
+CREATE TABLE sm.CatalogItem (   -- Catman: category / catalog management
+  ItemId BIGINT IDENTITY PRIMARY KEY, TenantId UNIQUEIDENTIFIER NOT NULL REFERENCES sm.Tenant,
+  Sku NVARCHAR(64) NOT NULL, Name NVARCHAR(300) NOT NULL, Category NVARCHAR(100) NOT NULL,
+  SupplierId BIGINT NOT NULL REFERENCES sm.Supplier, UnitCost DECIMAL(18,4) NOT NULL, Uom NVARCHAR(10) NOT NULL DEFAULT 'EA',
+  Status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', RowVer ROWVERSION,
+  CONSTRAINT UQ_Item UNIQUE (TenantId, Sku));
+CREATE INDEX IX_Item_Category ON sm.CatalogItem (TenantId, Category) INCLUDE (Sku, Name, UnitCost);
+
+CREATE TABLE sm.PurchaseOrder (
+  PoId BIGINT IDENTITY PRIMARY KEY, TenantId UNIQUEIDENTIFIER NOT NULL REFERENCES sm.Tenant,
+  PoNumber NVARCHAR(40) NOT NULL, SupplierId BIGINT NOT NULL REFERENCES sm.Supplier,
+  Status VARCHAR(20) NOT NULL DEFAULT 'CREATED', -- CREATED, APPROVED, SHIPPED, RECEIVED, CANCELLED
+  TotalAmount DECIMAL(18,2) NOT NULL DEFAULT 0, CreatedUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(), UpdatedUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT UQ_Po UNIQUE (TenantId, PoNumber));
+CREATE INDEX IX_Po_Status ON sm.PurchaseOrder (TenantId, Status, CreatedUtc DESC);
+
+CREATE TABLE sm.PurchaseOrderLine (
+  LineId BIGINT IDENTITY PRIMARY KEY, PoId BIGINT NOT NULL REFERENCES sm.PurchaseOrder, TenantId UNIQUEIDENTIFIER NOT NULL,
+  ItemId BIGINT NOT NULL REFERENCES sm.CatalogItem, Qty INT NOT NULL CHECK (Qty > 0), UnitCost DECIMAL(18,4) NOT NULL);
+
+CREATE TABLE sm.Inventory (
+  TenantId UNIQUEIDENTIFIER NOT NULL, ItemId BIGINT NOT NULL REFERENCES sm.CatalogItem, Warehouse NVARCHAR(20) NOT NULL,
+  OnHand INT NOT NULL DEFAULT 0, UpdatedUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  PRIMARY KEY (TenantId, ItemId, Warehouse));
+
+-- Transactional outbox: guarantees DB write + Kafka publish are consistent
+CREATE TABLE sm.Outbox (
+  OutboxId BIGINT IDENTITY PRIMARY KEY, TenantId UNIQUEIDENTIFIER NOT NULL, Topic NVARCHAR(100) NOT NULL, MessageKey NVARCHAR(100) NOT NULL,
+  Payload NVARCHAR(MAX) NOT NULL, CreatedUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(), PublishedUtc DATETIME2 NULL);
+CREATE INDEX IX_Outbox_Pending ON sm.Outbox (OutboxId) WHERE PublishedUtc IS NULL;
+
+-- Consumer idempotency (at-least-once delivery -> exactly-once effect)
+CREATE TABLE sm.ProcessedEvent (EventId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY, Consumer NVARCHAR(100) NOT NULL, ProcessedUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
+
+CREATE TABLE sm.AuditLog (AuditId BIGINT IDENTITY PRIMARY KEY, TenantId UNIQUEIDENTIFIER, Actor NVARCHAR(200), Action NVARCHAR(100), Detail NVARCHAR(MAX), CreatedUtc DATETIME2 DEFAULT SYSUTCDATETIME());
+GO
+
+-- ===== Row-Level Security: tenant isolation enforced in the database =====
+CREATE FUNCTION sec.fn_TenantFilter(@TenantId UNIQUEIDENTIFIER) RETURNS TABLE WITH SCHEMABINDING AS
+RETURN SELECT 1 AS ok WHERE @TenantId = TRY_CAST(SESSION_CONTEXT(N'TenantId') AS UNIQUEIDENTIFIER) OR SESSION_CONTEXT(N'IsSystem') = 1;
+GO
+CREATE SECURITY POLICY sec.TenantPolicy
+  ADD FILTER PREDICATE sec.fn_TenantFilter(TenantId) ON sm.Supplier,
+  ADD FILTER PREDICATE sec.fn_TenantFilter(TenantId) ON sm.CatalogItem,
+  ADD FILTER PREDICATE sec.fn_TenantFilter(TenantId) ON sm.PurchaseOrder,
+  ADD FILTER PREDICATE sec.fn_TenantFilter(TenantId) ON sm.PurchaseOrderLine,
+  ADD FILTER PREDICATE sec.fn_TenantFilter(TenantId) ON sm.Inventory,
+  ADD BLOCK PREDICATE sec.fn_TenantFilter(TenantId) ON sm.PurchaseOrder AFTER INSERT,
+  ADD BLOCK PREDICATE sec.fn_TenantFilter(TenantId) ON sm.CatalogItem AFTER INSERT
+  WITH (STATE = ON);
+GO

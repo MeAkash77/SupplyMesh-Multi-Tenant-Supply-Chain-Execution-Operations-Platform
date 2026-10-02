@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: inventory-worker, namespace: supplymesh }
+spec:
+  replicas: 3          # <= partition count of po.events; extra replicas would sit idle
+  selector: { matchLabels: { app: inventory-worker } }
+  template:
+    metadata: { labels: { app: inventory-worker } }
+    spec:
+      terminationGracePeriodSeconds: 45     # lets the consumer commit + leave the group cleanly
+      containers:
+        - name: inventory-worker
+          image: supplymeshacr.azurecr.io/supplymesh/inventory-worker:latest
+          envFrom: [{ configMapRef: { name: supplymesh-config } }, { secretRef: { name: supplymesh-secrets } }]
+          resources: { requests: { cpu: 100m, memory: 192Mi }, limits: { cpu: 500m, memory: 384Mi } }

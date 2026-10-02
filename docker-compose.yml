@@ -1,0 +1,58 @@
+# Full local stack: docker compose up -d --build
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment: { ACCEPT_EULA: "Y", MSSQL_SA_PASSWORD: "Your_strong_pw1" }
+    ports: ["1433:1433"]
+  db-init:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on: [mssql]
+    volumes: ["./db/migrations:/sql"]
+    entrypoint: ["/bin/bash","-c","sleep 25; for f in /sql/*.sql; do /opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P Your_strong_pw1 -i $$f; done"]
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports: ["9092:9092"]
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    environment: { discovery.type: single-node, xpack.security.enabled: "false", ES_JAVA_OPTS: "-Xms512m -Xmx512m" }
+    ports: ["9200:9200"]
+  influxdb:
+    image: influxdb:2.7
+    environment: { DOCKER_INFLUXDB_INIT_MODE: setup, DOCKER_INFLUXDB_INIT_USERNAME: admin, DOCKER_INFLUXDB_INIT_PASSWORD: adminpassword1, DOCKER_INFLUXDB_INIT_ORG: supplymesh, DOCKER_INFLUXDB_INIT_BUCKET: metrics, DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: dev-token }
+    ports: ["8086:8086"]
+  telegraf:
+    image: telegraf:1.31
+    depends_on: [influxdb]
+    volumes: ["./deploy/observability/telegraf.conf:/etc/telegraf/telegraf.conf:ro"]
+    ports: ["8125:8125/udp"]
+  grafana:
+    image: grafana/grafana:11.1.0
+    depends_on: [influxdb]
+    volumes: ["./deploy/observability/grafana:/etc/grafana/provisioning"]
+    ports: ["3000:3000"]
+  catalog-api:
+    build: { context: ., dockerfile: Dockerfile.dotnet, args: { PROJECT: SupplyMesh.Catalog.Api } }
+    depends_on: [mssql, kafka]
+    ports: ["5001:8080"]
+  orders-api:
+    build: { context: ., dockerfile: Dockerfile.dotnet, args: { PROJECT: SupplyMesh.Orders.Api } }
+    environment: { Kafka__BootstrapServers: "kafka:9092" }
+    depends_on: [mssql, kafka]
+    ports: ["5002:8080"]
+  inventory-worker:
+    build: { context: ., dockerfile: Dockerfile.dotnet, args: { PROJECT: SupplyMesh.Inventory.Worker } }
+    environment: { Kafka__BootstrapServers: "kafka:9092" }
+    depends_on: [mssql, kafka]
+  web:
+    build: ./web
+    ports: ["8080:80"]
